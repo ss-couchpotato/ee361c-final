@@ -44,6 +44,68 @@ class node {
 	}
 };
 
+void printResults(int distance[], int num_nodes) 
+{ 
+   printf("Vertex\t Distance from start_node\n"); 
+   for (int i = 0; i < num_nodes; i++) {
+      printf("%d\t %d\n", i, distance[i]); 
+   }
+} 
+
+// helper function that finds nearest neighbor for serial SPA
+int minDistance(int distance[], bool used_nodes[], int num_nodes) 
+{ 
+	int min_distance = INT_MAX;
+	int min_node = -1; 
+
+	for (int node = 0; node < num_nodes; node++) {
+		if (used_nodes[node] == false && distance[node] <= min_distance) {
+			min_distance = distance[node], min_node = node; 
+		}
+	}     
+	return min_node; 
+} 
+
+// returns weight of connection between node1 and node2 if they are neighbors
+int areNeighbors(vector<node> graph, int node1, int node2) 
+{
+	vector<edge> neighbors = graph[node1].neighbors;
+	for (int i = 0; i < neighbors.size(); i++) {
+		if (neighbors[i].neighbor == node2) {
+			return neighbors[i].weight;
+		}
+	}
+	return -1;
+}
+
+// serial implementation of Dijkstra's shortest path algorithm
+void SPA_serial(vector<node> graph, int start_node) 
+{ 
+	int num_nodes = graph.size();
+	int distance[num_nodes]; // holds distance from start_node to node i
+	bool used_nodes[num_nodes]; // i is true is node is used in shortest path tree
+
+	for (int i = 0; i < num_nodes; i++) {
+		used_nodes[i] = false; 
+		distance[i] = INT_MAX;
+	}
+	distance[start_node] = 0; 
+
+	// find shortest path from start_node to each node
+	for (int count = 0; count < num_nodes-1; count++) { 
+		int nearest_node = minDistance(distance, used_nodes, num_nodes); 
+		used_nodes[nearest_node] = true; 
+
+		for (int curr_node = 0; curr_node < num_nodes; curr_node++) {
+			int weight = areNeighbors(graph, nearest_node, curr_node);
+			if (!used_nodes[curr_node] && weight != -1 && distance[nearest_node] != INT_MAX && (distance[nearest_node] + weight) < distance[curr_node]) {
+				distance[curr_node] = distance[nearest_node] + weight; 
+			}
+		}
+	} 
+	printResults(distance, num_nodes);
+} 
+
 // Find cuda enabled device and return block size
 static int getBlockSize()
 {
@@ -55,6 +117,7 @@ static int getBlockSize()
 	cudaGetDeviceProperties(&deviceProp, 0);
 	return deviceProp.maxThreadsPerBlock;
 }
+
 
 int main(int argc, char* argv[])
 {
@@ -81,6 +144,8 @@ int main(int argc, char* argv[])
 		graph[a].neighbors.push_back(edge(weight, b));
 		graph[b].neighbors.push_back(edge(weight, a));
 	}
+
+	SPA_serial(graph, 0); // find shortest distance from node 0 to all others
 
 	return 0;
 }
