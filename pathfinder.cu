@@ -6,6 +6,7 @@
 #include <string>
 #include <sstream>
 #include <vector>
+#include <ctime>
 
 using namespace std;
 
@@ -46,9 +47,9 @@ class node {
 
 void printResults(int distance[], int num_nodes) 
 { 
-   printf("Vertex\t Distance from start_node\n"); 
+   cout << "Vertex\t Distance from start_node\n"; 
    for (int i = 0; i < num_nodes; i++) {
-      printf("%d\t %d\n", i, distance[i]); 
+      cout << i << "\t" << distance[i] << "\n"; 
    }
 } 
 
@@ -98,7 +99,8 @@ void SPA_serial(vector<node> graph, int start_node)
 
 		for (int curr_node = 0; curr_node < num_nodes; curr_node++) {
 			int weight = areNeighbors(graph, nearest_node, curr_node);
-			if (!used_nodes[curr_node] && weight != -1 && distance[nearest_node] != INT_MAX && (distance[nearest_node] + weight) < distance[curr_node]) {
+			if (!used_nodes[curr_node] && weight != -1 && distance[nearest_node] != INT_MAX 
+				&& (distance[nearest_node] + weight) < distance[curr_node]) {
 				distance[curr_node] = distance[nearest_node] + weight; 
 			}
 		}
@@ -145,7 +147,10 @@ int main(int argc, char* argv[])
 		graph[b].neighbors.push_back(edge(weight, a));
 	}
 
+	clock_t start = clock();
 	SPA_serial(graph, 0); // find shortest distance from node 0 to all others
+	clock_t end = clock();
+	cout << "Serial shortest distance algorithm took " << (end - start) << " clock cycles\n\n";
 
 	return 0;
 }
