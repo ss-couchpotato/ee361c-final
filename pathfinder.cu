@@ -2,7 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <queue>
+#include <list>
 #include <string>
 #include <sstream>
 #include <vector>
@@ -37,75 +37,75 @@ class node {
 	public:
 		int cost;
 		int parent;
+		bool visited;
 		vector<edge> neighbors;
 
 	node() {
+		reset();
+	}
+
+	void reset() {
 		cost = INT_MAX;
 		parent = -1;
+		visited = false;
 	}
 };
 
-void printResults(int distance[], int num_nodes) 
+void printResults(vector<node> graph) 
 { 
    cout << "Vertex\t Distance from start_node\n"; 
-   for (int i = 0; i < num_nodes; i++) {
-      cout << i << "\t" << distance[i] << "\n"; 
+   for (int i = 0; i < graph.size(); i++) {
+      cout << i << "\t" << graph[i].cost << "\n"; 
    }
 } 
 
 // helper function that finds nearest neighbor for serial SPA
-int minDistance(int distance[], bool used_nodes[], int num_nodes) 
+int minDistance(vector<node> &graph, list<int> &queue) 
 { 
-	int min_distance = INT_MAX;
-	int min_node = -1; 
+	int min_node = queue.front(); 
+	int min_distance = graph[min_node].cost;
 
-	for (int node = 0; node < num_nodes; node++) {
-		if (used_nodes[node] == false && distance[node] <= min_distance) {
-			min_distance = distance[node], min_node = node; 
+	for (int node : queue) {
+		if (graph[node].cost < min_distance) {
+			min_distance = graph[node].cost, min_node = node; 
 		}
 	}     
 	return min_node; 
 } 
 
-// returns weight of connection between node1 and node2 if they are neighbors
-int areNeighbors(vector<node> graph, int node1, int node2) 
-{
-	vector<edge> neighbors = graph[node1].neighbors;
-	for (int i = 0; i < neighbors.size(); i++) {
-		if (neighbors[i].neighbor == node2) {
-			return neighbors[i].weight;
-		}
-	}
-	return -1;
-}
-
 // serial implementation of Dijkstra's shortest path algorithm
-void SPA_serial(vector<node> graph, int start_node) 
+void SPA_serial(vector<node> &graph, int start_node) 
 { 
 	int num_nodes = graph.size();
-	int distance[num_nodes]; // holds distance from start_node to node i
-	bool used_nodes[num_nodes]; // i is true is node is used in shortest path tree
+	list<int> queue;
 
 	for (int i = 0; i < num_nodes; i++) {
-		used_nodes[i] = false; 
-		distance[i] = INT_MAX;
+		graph[i].reset();
+		queue.push_back(i);
 	}
-	distance[start_node] = 0; 
+	graph[start_node].cost = 0; 
 
 	// find shortest path from start_node to each node
-	for (int count = 0; count < num_nodes-1; count++) { 
-		int nearest_node = minDistance(distance, used_nodes, num_nodes); 
-		used_nodes[nearest_node] = true; 
+	while (!queue.empty()) { 
+		int nearest_node = minDistance(graph, queue);	// Get node with lowest cost from queue
+		queue.remove(nearest_node);
+		graph[nearest_node].visited = true;
+		vector<edge> &neighbors = graph[nearest_node].neighbors;
 
-		for (int curr_node = 0; curr_node < num_nodes; curr_node++) {
-			int weight = areNeighbors(graph, nearest_node, curr_node);
-			if (!used_nodes[curr_node] && weight != -1 && distance[nearest_node] != INT_MAX 
-				&& (distance[nearest_node] + weight) < distance[curr_node]) {
-				distance[curr_node] = distance[nearest_node] + weight; 
+		for (edge const& neighbor : neighbors) {
+			int weight = neighbor.weight;
+			int curr_node = neighbor.neighbor;
+			if (graph[curr_node].visited)
+				continue;
+
+			int cost = graph[nearest_node].cost + weight;
+			if (cost < graph[curr_node].cost) {
+				graph[curr_node].cost = cost; 
+				graph[curr_node].parent = nearest_node;
 			}
 		}
 	} 
-	printResults(distance, num_nodes);
+	printResults(graph);
 } 
 
 // Find cuda enabled device and return block size
