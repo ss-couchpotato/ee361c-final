@@ -174,8 +174,9 @@ __global__ void compute_edge_dist(int num_edges, int * cost, node * graph, edge 
 		//printf("index:%d is %d\n", index, cost[index]);
 	}
 }
-__global__ void update_costs(int edge_index, int num_to_update, int cost_of_added, node * graph, edge * edges, edge * edges_to_update) {
+__global__ void update_costs(int edge_index, int num_to_update, int * cost, node * graph, edge * edges, edge * edges_to_update) {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
+	int cost_of_added = cost[edge_index];
 	if (index < num_to_update) {
 		int new_cost = edges_to_update[index].weight + cost_of_added;
 		if (new_cost >= 0 && new_cost < graph[edges_to_update[index].neighbor].cost)graph[edges_to_update[index].neighbor].cost = new_cost;
@@ -244,10 +245,6 @@ void SPA_parallel(vector<node> &graph, vector<edge> &edges, int start_node) {
 
 		//Kernel to update costs of node and its neighbors O(1)
 		int node_to_add = edges[edge_index].neighbor;
-		//read from device
-		int new_cost_of_node;//graph[edges[edge_index].parent].cost + edges[edge_index].weight;
-		cudaMemcpy(&new_cost_of_node, cost + edge_index, sizeof(int), cudaMemcpyDeviceToHost);
-		if (new_cost_of_node < 0)new_cost_of_node = INT_MAX;
 		//printf("adding node: %d with cost %d\n", node_to_add,new_cost_of_node);
 		int number_of_edges_to_update = graph[edges[edge_index].neighbor].neighbors.size();
 		edge * edges_to_update = &(graph[edges[edge_index].neighbor].neighbors[0]);
@@ -255,7 +252,7 @@ void SPA_parallel(vector<node> &graph, vector<edge> &edges, int start_node) {
 		cudaMalloc((void **)&device_edges_to_update, sizeof(edge)*number_of_edges_to_update);
 		cudaMemcpy(device_edges_to_update, edges_to_update, sizeof(edge)*number_of_edges_to_update, cudaMemcpyHostToDevice);
 		numBlocks = ((number_of_edges_to_update + 1) + blockSize - 1) / blockSize;
-		update_costs << <numBlocks, blockSize >> > (edge_index, number_of_edges_to_update, new_cost_of_node, device_graph, device_edge, device_edges_to_update);
+		update_costs << <numBlocks, blockSize >> > (edge_index, number_of_edges_to_update, cost, device_graph, device_edge, device_edges_to_update);
 		cudaFree(device_edges_to_update);
 		//find next lowest cost
 		num_added++;
