@@ -74,7 +74,8 @@ int minDistance(vector<node> &graph, list<int> &queue)
 	int min_node = queue.front();
 	int min_distance = graph[min_node].cost;
 
-	for (int node : queue) {
+	for (list<int>::iterator it = queue.begin(); it != queue.end(); ++it){
+		int node = *it;
 		if (graph[node].cost < min_distance) {
 			min_distance = graph[node].cost, min_node = node;
 		}
@@ -100,8 +101,8 @@ void SPA_serial(vector<node> &graph, int start_node)
 		queue.remove(nearest_node);
 		graph[nearest_node].visited = true;
 		vector<edge> &neighbors = graph[nearest_node].neighbors;
-
-		for (edge const& neighbor : neighbors) {
+		for (vector<edge>::iterator it = neighbors.begin(); it != neighbors.end(); ++it){
+			edge &neighbor = *it;
 			int weight = neighbor.weight;
 			int curr_node = neighbor.neighbor;
 			if (graph[curr_node].visited)
@@ -271,19 +272,19 @@ int main(int argc, char* argv[])
 		PFERROR_EXIT(1, "Error opening input file\n");
 	string token;
 	getline(infile, token, ' ');
-	int num_node = stoi(token);
+	int num_node = atoi(token.c_str());
 	getline(infile, token);
-	int num_edge = stoi(token);
+	int num_edge = atoi(token.c_str());
 
 	vector<node> graph(num_node);
 	vector<edge> edges(2 * num_edge);
 	for (int i = 0; i < num_edge; i++) {
 		getline(infile, token, ' ');
-		int a = stoi(token);
+		int a = atoi(token.c_str());
 		getline(infile, token, ' ');
-		int b = stoi(token);
+		int b = atoi(token.c_str());
 		getline(infile, token);
-		int weight = stoi(token);
+		int weight = atoi(token.c_str());
 		graph[a].neighbors.push_back(edge(weight, b, a));
 		graph[b].neighbors.push_back(edge(weight, a, b));
 		edges.push_back(edge(weight, b, a));
