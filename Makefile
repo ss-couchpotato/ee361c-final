@@ -1,8 +1,13 @@
 CC = nvcc
+GCC = gcc
 CCSTD = c++11
-BIN = pathfinder 
+BIN = pathfinder
+GENERATE = generate
 
-all: $(BIN)
+all: $(BIN) $(GENERATE)
+
+$(GENERATE): %: %.c
+	$(GCC) -o $@ $<
 
 $(BIN): %: %.cu
 	$(CC) -o $@ -std $(CCSTD) $<
