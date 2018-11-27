@@ -4,9 +4,17 @@ Pathfinder.cu contains both a serial and parallel (GPU) shortest path implementa
 ## Running the tests
 The master branch may not compile on maverick due to c++ 11 constraints. If this is the case, run the non-C++11 branch code.
 
-Compile pathfinder.cu (you may need to add flags to compile)
+If your system has C++ 11 support, run:
+
+```make```
+
+<br>
+If the compiler complains, use the source code from the `non-C++11` branch and do the following:
+
+Compile pathfinder.cu (you may need to add flags to compile):
+
 ```
-make
+nvcc pathfinder.cu -o pathfinder
 ```
 Run the executable with a testcase using the format `./pathfinder {testcase}`:
 ```
