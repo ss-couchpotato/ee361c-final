@@ -68,6 +68,18 @@ void printResults(vector<node> graph)
 	}
 }
 
+void compareResults(vector<node> graph1, vector<node> graph2)
+{
+	cout << "****** RESULT ******\n";
+	for (int i = 0; i < graph1.size(); i++) {
+		if (graph1[i].cost != graph2[i].cost) {
+			cout << "INCORRECT: Parallel and Serial SPA do NOT match\n";
+			return;
+		}
+	}
+	cout << "SUCCESS: Parallel and Serial SPA match\n";
+}
+
 // helper function that finds nearest neighbor for serial SPA
 int minDistance(vector<node> &graph, list<int> &queue)
 {
@@ -83,7 +95,7 @@ int minDistance(vector<node> &graph, list<int> &queue)
 }
 
 // serial implementation of Dijkstra's shortest path algorithm
-void SPA_serial(vector<node> &graph, int start_node)
+vector<node> SPA_serial(vector<node> &graph, int start_node)
 {
 	int num_nodes = graph.size();
 	list<int> queue;
@@ -115,6 +127,7 @@ void SPA_serial(vector<node> &graph, int start_node)
 		}
 	}
 	printResults(graph);
+	return graph;
 }
 
 // Find cuda enabled device and return block size
@@ -128,6 +141,7 @@ static int getBlockSize()
 	cudaGetDeviceProperties(&deviceProp, 0);
 	return deviceProp.maxThreadsPerBlock;
 }
+
 __global__ void checkMin(int n, int *input, bool *is_min)
 {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -142,6 +156,7 @@ __global__ void findMinIdx(int n, bool *is_min, int *result)
 		*result = index;
 	}
 }
+
 int min_val(int n, int *c_input) {
 	int  *c_result, result;
 	bool *c_is_min;
@@ -162,6 +177,7 @@ int min_val(int n, int *c_input) {
 	//printf("WOW index:%d is min", result);
 	return result;
 }
+
 __global__ void compute_edge_dist(int num_edges, int * cost, node * graph, edge * edges) {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	if (index < num_edges) {
@@ -174,6 +190,7 @@ __global__ void compute_edge_dist(int num_edges, int * cost, node * graph, edge 
 		//printf("index:%d is %d\n", index, cost[index]);
 	}
 }
+
 __global__ void update_costs(int edge_index, int num_to_update, int * cost, node * graph, edge * edges, edge * edges_to_update) {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int cost_of_added = cost[edge_index];
@@ -186,6 +203,7 @@ __global__ void update_costs(int edge_index, int num_to_update, int * cost, node
 		graph[edges[edge_index].neighbor].cost = cost_of_added;
 	}
 }
+
 __global__ void update_costs_init(int num_to_update, int cost_of_added, node * graph, edge * edges_to_update) {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	if (index < num_to_update) {
@@ -193,6 +211,7 @@ __global__ void update_costs_init(int num_to_update, int cost_of_added, node * g
 		if (new_cost < graph[edges_to_update[index].neighbor].cost)graph[edges_to_update[index].neighbor].cost = new_cost;
 	}
 }
+
 void init_start_edges(vector<node> &graph, node * device_graph, int start_node) {
 	int number_of_edges_to_update = graph[start_node].neighbors.size();
 	//get raw data
@@ -205,7 +224,8 @@ void init_start_edges(vector<node> &graph, node * device_graph, int start_node) 
 	update_costs_init << <numBlocks, blockSize >> > (number_of_edges_to_update, 0, device_graph, device_edges_to_update);
 	cudaFree(device_edges_to_update);
 }
-void SPA_parallel(vector<node> &graph, vector<edge> &edges, int start_node) {
+
+vector<node> SPA_parallel(vector<node> &graph, vector<edge> &edges, int start_node) {
 	int num_edges = edges.size();
 	int num_nodes = graph.size();
 	int num_added = 0;
@@ -259,6 +279,7 @@ void SPA_parallel(vector<node> &graph, vector<edge> &edges, int start_node) {
 	}
 	cudaMemcpy(host_graph, device_graph, sizeof(node)*num_nodes, cudaMemcpyDeviceToHost);
 	printResults(graph);
+	return graph;
 }
 
 int main(int argc, char* argv[])
@@ -290,14 +311,15 @@ int main(int argc, char* argv[])
 		edges.push_back(edge(weight, a, b));
 	}
 	clock_t start = clock();
-	SPA_parallel(graph, edges, 0);
+	vector<node> graphParallel = SPA_parallel(graph, edges, 0);
 	clock_t end = clock();
 	cout << "Parallel shortest distance algorithm took " << (end - start) << " clock cycles\n\n";
 
 	start = clock();
-	SPA_serial(graph, 0); // find shortest distance from node 0 to all others
+	vector<node> graphSerial = SPA_serial(graph, 0); // find shortest distance from node 0 to all others
 	end = clock();
 	cout << "Serial shortest distance algorithm took " << (end - start) << " clock cycles\n\n";
 
+	compareResults(graphParallel, graphSerial);
 	return 0;
 }
