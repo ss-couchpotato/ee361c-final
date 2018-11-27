@@ -110,7 +110,11 @@ vector<node> SPA_serial(vector<node> &graph, int start_node)
 
 	// find shortest path from start_node to each node
 	while (!queue.empty()) {
+    for (int i = 0; i < num_nodes; i++) {
+      printf("cost for finding min %d: %d\n", i, graph[i].cost);
+    }
 		int nearest_node = minDistance(graph, queue);	// Get node with lowest cost from queue
+    printf("nearest node is %d\n", nearest_node);
 		queue.remove(nearest_node);
 		graph[nearest_node].visited = true;
 		vector<edge> &neighbors = graph[nearest_node].neighbors;
@@ -127,6 +131,10 @@ vector<node> SPA_serial(vector<node> &graph, int start_node)
 				graph[curr_node].parent = nearest_node;
 			}
 		}
+
+    for (int i = 0; i < num_nodes; i++) {
+      printf("cost %d: %d\n", i, graph[i].cost);
+    }
 	}
 	return graph;
 }
@@ -177,10 +185,10 @@ int parallel_min_distance(bool *visited, int *cost, int n) {
 
 __global__ void update_cost(int *matrix, bool *visited, int *costs, int n, int node) {
   int index = blockIdx.x * blockDim.x + threadIdx.x;
-  if (index < n) {
-    if (visited[index])
+  if (index < n && index != node) {
+    if (visited[index] || matrix[node*n+index] == INT_MAX)
       return;
-    int cost = matrix[node*n+index] + costs[node];
+    int cost = costs[node] + matrix[node*n+index];
     if (cost < costs[index]) {
       costs[index] = cost;
     }
@@ -190,31 +198,39 @@ __global__ void update_cost(int *matrix, bool *visited, int *costs, int n, int n
 vector<node> SPA_parallel(int *matrix, int n, int start_node) {
   int *c_matrix, *c_cost;
   bool *c_visited;
+  int num_node = n;
   int *cost = (int *) malloc(sizeof(int) * n);
+  for (int i = 0; i < n; i++) {
+    cost[i] = INT_MAX;
+  }
   cudaMalloc((void **)&c_matrix, sizeof(int) * n * n);
   cudaMalloc((void **)&c_cost, sizeof(int) * n);
   cudaMalloc((void **)&c_visited, sizeof(bool) * n);
   cudaMemcpy(c_matrix, matrix, sizeof(int) * n * n, cudaMemcpyHostToDevice);
-  cudaMemset(c_cost, INT_MAX, sizeof(int) * n);
+  cudaMemcpy(c_cost, cost, sizeof(int) * n, cudaMemcpyHostToDevice);
   cudaMemset((void *)&c_cost[start_node], 0, sizeof(int));
-
   int numBlocks = (n + blockSize - 1) / blockSize;
 
 	// find shortest path from start_node to each node
-	while (n != 0) {
+	while (num_node != 0) {
     // In parallel, get node with lowest cost from queue
 		int nearest_node = parallel_min_distance(c_visited, c_cost, n);
+    printf("nearest node is %d\n", nearest_node);
 	  cudaMemset((void *)&c_visited[nearest_node], true, sizeof(bool));
 
     // In parallel, update all neighbors of nearest node
     update_cost<<<numBlocks, blockSize>>>(matrix, c_visited, c_cost, n, nearest_node);
     cudaDeviceSynchronize();
-    n--;
+    cudaMemcpy(cost, c_cost, sizeof(int) * n, cudaMemcpyDeviceToHost);
+    for (int i = 0; i < n; i++) {
+      printf("cost %d: %d\n", i, cost[i]);
+    }
+    num_node--;
 	}
   cudaMemcpy(cost, c_cost, sizeof(int) * n, cudaMemcpyDeviceToHost);
-  for (int i =0; i < n; i++)
+  for (int i = 0; i < n; i++)
     printf("%d: %d\n", i, cost[i]);
-  vector<node> graph;
+  vector<node> graph(n);
   for (int i = 0; i < n; i++) {
     graph[i].cost = cost[i];
   }
@@ -258,10 +274,9 @@ int main(int argc, char* argv[])
   for (int i = 0; i < num_node; i++) {
     for (int j = 0; j < num_node; j++) {
       if (matrix[i*num_node+j] != 0)
-        graph[i].neighbors.push_back(edge(matrix[i*num_node+j], i, j));
+        graph[i].neighbors.push_back(edge(matrix[i*num_node+j], j, i));
     }
   }
-  cout << "graph generated\n";
 	clock_t start = clock();
 	vector<node> graphParallel = SPA_parallel(matrix, num_node, 0);
 	clock_t end = clock();
@@ -272,6 +287,8 @@ int main(int argc, char* argv[])
 	end = clock();
 	cout << "Serial shortest distance algorithm took " << (end - start) << " clock cycles\n\n";
 
+  printResults(graphSerial);
+  printResults(graphParallel);
 	compareResults(graphParallel, graphSerial);
 	return 0;
 }
