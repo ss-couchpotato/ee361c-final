@@ -6,16 +6,12 @@ The master branch may not compile on maverick due to c++ 11 constraints. If this
 
 If your system has C++ 11 support, run:
 
-```make```
-
+```
+make
+```
 <br>
-If the compiler complains, use the source code from the `non-C++11` branch and do the following:
+If the compiler complains, use the source code from the `non-C++11` branch.
 
-Compile pathfinder.cu (you may need to add flags to compile):
-
-```
-nvcc pathfinder.cu -o pathfinder
-```
 Run the executable with a testcase using the format `./pathfinder {testcase}`:
 ```
 ./pathfinder 10

@@ -10,7 +10,6 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
-
 using namespace std;
 
 #define PERROR_EXIT(message)                                                   \
@@ -59,6 +58,9 @@ public:
 		visited = false;
 	}
 };
+
+// Globals
+int blockSize;
 
 void printResults(vector<node> graph)
 {
@@ -126,7 +128,6 @@ vector<node> SPA_serial(vector<node> &graph, int start_node)
 			}
 		}
 	}
-	printResults(graph);
 	return graph;
 }
 
@@ -142,10 +143,10 @@ static int getBlockSize()
 	return deviceProp.maxThreadsPerBlock;
 }
 
-__global__ void checkMin(int n, int *input, bool *is_min)
+__global__ void checkMin(int n, int *input, bool *is_min, bool *visited)
 {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	if (index < n * n && input[index / n] > input[index % n])
+	if (index < n * n && (input[index / n] > input[index % n] || visited))
 		is_min[index / n] = false;
 }
 
@@ -157,128 +158,69 @@ __global__ void findMinIdx(int n, bool *is_min, int *result)
 	}
 }
 
-int min_val(int n, int *c_input) {
+int parallel_min_distance(bool *visited, int *cost, int n) {
 	int  *c_result, result;
 	bool *c_is_min;
-	//cudaMalloc((void **)&c_input, sizeof(int) * n);
 	cudaMalloc((void **)&c_is_min, sizeof(bool) * n);
 	cudaMalloc((void **)&c_result, sizeof(int));
-	//cudaMemcpy(c_input, input, sizeof(int) * n, cudaMemcpyHostToDevice);
 	cudaMemset(c_is_min, true, sizeof(bool) * n);
-	int blockSize = getBlockSize();
 	int numBlocks = (n * n + blockSize - 1) / blockSize;
-	checkMin << <numBlocks, blockSize >> > (n, c_input, c_is_min);
+	checkMin << <numBlocks, blockSize >> > (n, cost, c_is_min, visited);
 	cudaDeviceSynchronize();
 	numBlocks = (n + blockSize - 1) / blockSize;
 	findMinIdx << <numBlocks, blockSize >> > (n, c_is_min, c_result);
 
 	// Retrieving result
 	cudaMemcpy((void *)&result, (void *)c_result, sizeof(int), cudaMemcpyDeviceToHost);
-	//printf("WOW index:%d is min", result);
 	return result;
 }
 
-__global__ void compute_edge_dist(int num_edges, int * cost, node * graph, edge * edges) {
-	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	if (index < num_edges) {
-		int temp_cost = INT_MAX;
-		edge *e = &edges[index];
-		if (graph[e->parent].visited && !graph[e->neighbor].visited)
-			temp_cost = graph[e->parent].cost + e->weight;
-		//cost of host (from graph) + edge weight
-		cost[index] = (temp_cost >= 0) ? temp_cost : INT_MAX;
-		//printf("index:%d is %d\n", index, cost[index]);
-	}
+__global__ void update_cost(int *matrix, bool *visited, int *costs, int n, int node) {
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index < n) {
+    if (visited[index])
+      return;
+    int cost = matrix[node*n+index] + costs[node];
+    if (cost < costs[index]) {
+      costs[index] = cost;
+    }
+  }
 }
 
-__global__ void update_costs(int edge_index, int num_to_update, int * cost, node * graph, edge * edges, edge * edges_to_update) {
-	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	int cost_of_added = cost[edge_index];
-	if (index < num_to_update) {
-		int new_cost = edges_to_update[index].weight + cost_of_added;
-		if (new_cost >= 0 && new_cost < graph[edges_to_update[index].neighbor].cost)graph[edges_to_update[index].neighbor].cost = new_cost;
+vector<node> SPA_parallel(int *matrix, int n, int start_node) {
+  int *c_matrix, *c_cost;
+  bool *c_visited;
+  int *cost = (int *) malloc(sizeof(int) * n);
+  cudaMalloc((void **)&c_matrix, sizeof(int) * n * n);
+  cudaMalloc((void **)&c_cost, sizeof(int) * n);
+  cudaMalloc((void **)&c_visited, sizeof(bool) * n);
+  cudaMemcpy(c_matrix, matrix, sizeof(int) * n * n, cudaMemcpyHostToDevice);
+  cudaMemset(c_cost, INT_MAX, sizeof(int) * n);
+  cudaMemset((void *)&c_cost[start_node], 0, sizeof(int));
+
+  int numBlocks = (n + blockSize - 1) / blockSize;
+
+	// find shortest path from start_node to each node
+	while (n != 0) {
+    // In parallel, get node with lowest cost from queue
+		int nearest_node = parallel_min_distance(c_visited, c_cost, n);
+	  cudaMemset((void *)&c_visited[nearest_node], true, sizeof(bool));
+
+    // In parallel, update all neighbors of nearest node
+    update_cost<<<numBlocks, blockSize>>>(matrix, c_visited, c_cost, n, nearest_node);
+    cudaDeviceSynchronize();
+    n--;
 	}
-	else if (index == num_to_update) {
-		graph[edges[edge_index].neighbor].visited = true;
-		graph[edges[edge_index].neighbor].cost = cost_of_added;
-	}
-}
-
-__global__ void update_costs_init(int num_to_update, int cost_of_added, node * graph, edge * edges_to_update) {
-	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	if (index < num_to_update) {
-		int new_cost = edges_to_update[index].weight + cost_of_added;
-		if (new_cost < graph[edges_to_update[index].neighbor].cost)graph[edges_to_update[index].neighbor].cost = new_cost;
-	}
-}
-
-void init_start_edges(vector<node> &graph, node * device_graph, int start_node) {
-	int number_of_edges_to_update = graph[start_node].neighbors.size();
-	//get raw data
-	edge * edges_to_update = &(graph[start_node].neighbors[0]);
-	edge* device_edges_to_update;
-	cudaMalloc((void **)&device_edges_to_update, sizeof(edge)*number_of_edges_to_update);
-	cudaMemcpy(device_edges_to_update, edges_to_update, sizeof(edge)*number_of_edges_to_update, cudaMemcpyHostToDevice);
-	int blockSize = getBlockSize();
-	int numBlocks = ((number_of_edges_to_update)+blockSize - 1) / blockSize;
-	update_costs_init << <numBlocks, blockSize >> > (number_of_edges_to_update, 0, device_graph, device_edges_to_update);
-	cudaFree(device_edges_to_update);
-}
-
-vector<node> SPA_parallel(vector<node> &graph, vector<edge> &edges, int start_node) {
-	int num_edges = edges.size();
-	int num_nodes = graph.size();
-	int num_added = 0;
-	for (int i = 0; i < num_nodes; i++) {
-		graph[i].reset();
-	}
-	graph[start_node].visited = true;
-	graph[start_node].cost = 0;
-	//Copying edege and graph data to Device
-	node* host_graph = &graph[0];
-	node* device_graph;
-	cudaMalloc((void **)&device_graph, sizeof(node)*num_nodes);
-	cudaMemcpy(device_graph, host_graph, sizeof(node)*num_nodes, cudaMemcpyHostToDevice);
-	//set all neighbors of start node to their respective weights in parallel
-	init_start_edges(graph, device_graph, start_node);
-	/*
-	for (edge const& e : graph[start_node].neighbors) {
-		graph[e.neighbor].cost = e.weight;
-	}*/
-
-	edge* host_edge = &edges[0];
-	edge* device_edge;
-	cudaMalloc((void **)&device_edge, sizeof(edge)*num_edges);
-	cudaMemcpy(device_edge, host_edge, sizeof(edge)*num_edges, cudaMemcpyHostToDevice);
-	//allocate cost array that will hold cost of each potential edge
-	int *cost;
-	cudaMalloc((void **)&cost, sizeof(int) * num_edges);
-	//while we have not visited all the nodes
-	while (num_added != num_nodes - 1) { //O(n)
-		int blockSize = getBlockSize();
-		int numBlocks = (num_edges + blockSize - 1) / blockSize;
-		//kernel call to compute each edge's neighbors cost if added to cluster O(1)
-		compute_edge_dist << <numBlocks, blockSize >> > (num_edges, cost, device_graph, device_edge);
-
-		//kernel call to pick minimum cost edge's neighbor O(1)
-		int edge_index = min_val(num_edges, cost);//lowest possible edge addition
-
-		//Kernel to update costs of node and its neighbors O(1)
-		int node_to_add = edges[edge_index].neighbor;
-		//printf("adding node: %d with cost %d\n", node_to_add,new_cost_of_node);
-		int number_of_edges_to_update = graph[edges[edge_index].neighbor].neighbors.size();
-		edge * edges_to_update = &(graph[edges[edge_index].neighbor].neighbors[0]);
-		edge* device_edges_to_update;
-		cudaMalloc((void **)&device_edges_to_update, sizeof(edge)*number_of_edges_to_update);
-		cudaMemcpy(device_edges_to_update, edges_to_update, sizeof(edge)*number_of_edges_to_update, cudaMemcpyHostToDevice);
-		numBlocks = ((number_of_edges_to_update + 1) + blockSize - 1) / blockSize;
-		update_costs << <numBlocks, blockSize >> > (edge_index, number_of_edges_to_update, cost, device_graph, device_edge, device_edges_to_update);
-		cudaFree(device_edges_to_update);
-		//find next lowest cost
-		num_added++;
-	}
-	cudaMemcpy(host_graph, device_graph, sizeof(node)*num_nodes, cudaMemcpyDeviceToHost);
-	printResults(graph);
+  cudaMemcpy(cost, c_cost, sizeof(int) * n, cudaMemcpyDeviceToHost);
+  for (int i =0; i < n; i++)
+    printf("%d: %d\n", i, cost[i]);
+  vector<node> graph;
+  for (int i = 0; i < n; i++) {
+    graph[i].cost = cost[i];
+  }
+  cudaFree(c_matrix);
+  cudaFree(c_cost);
+  cudaFree(c_visited);
 	return graph;
 }
 
@@ -290,14 +232,19 @@ int main(int argc, char* argv[])
 	ifstream infile(argv[1]);
 	if (!infile)
 		PFERROR_EXIT(1, "Error opening input file\n");
+
+  blockSize = getBlockSize();
+
 	string token;
 	getline(infile, token, ' ');
 	int num_node = stoi(token);
 	getline(infile, token);
 	int num_edge = stoi(token);
-
+  // int matrix[num_node][num_node];
+  int *matrix = (int *) malloc(sizeof(int) * num_node * num_node);
 	vector<node> graph(num_node);
 	vector<edge> edges(2 * num_edge);
+  printf("n = %d\tm = %d\n", num_node, num_edge);
 	for (int i = 0; i < num_edge; i++) {
 		getline(infile, token, ' ');
 		int a = stoi(token);
@@ -305,13 +252,18 @@ int main(int argc, char* argv[])
 		int b = stoi(token);
 		getline(infile, token);
 		int weight = stoi(token);
-		graph[a].neighbors.push_back(edge(weight, b, a));
-		graph[b].neighbors.push_back(edge(weight, a, b));
-		edges.push_back(edge(weight, b, a));
-		edges.push_back(edge(weight, a, b));
+    matrix[a*num_node+b] += weight;
+    matrix[b*num_node+a] += weight;
 	}
+  for (int i = 0; i < num_node; i++) {
+    for (int j = 0; j < num_node; j++) {
+      if (matrix[i*num_node+j] != 0)
+        graph[i].neighbors.push_back(edge(matrix[i*num_node+j], i, j));
+    }
+  }
+  cout << "graph generated\n";
 	clock_t start = clock();
-	vector<node> graphParallel = SPA_parallel(graph, edges, 0);
+	vector<node> graphParallel = SPA_parallel(matrix, num_node, 0);
 	clock_t end = clock();
 	cout << "Parallel shortest distance algorithm took " << (end - start) << " clock cycles\n\n";
 

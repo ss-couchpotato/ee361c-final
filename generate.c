@@ -29,7 +29,8 @@ int main(int argc, char* argv[]) {
     do {
       b = rand() % n;
     } while (a == b);
-    fprintf(file, "%d %d %d\n", a, b, rand() % MAX_WEIGHT);
+    // weight between 1 to MAX_WEIGHT
+    fprintf(file, "%d %d %d\n", a, b, rand() % MAX_WEIGHT + 1);
   }
   fclose(file);
 }
