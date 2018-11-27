@@ -110,11 +110,7 @@ vector<node> SPA_serial(vector<node> &graph, int start_node)
 
 	// find shortest path from start_node to each node
 	while (!queue.empty()) {
-    for (int i = 0; i < num_nodes; i++) {
-      printf("cost for finding min %d: %d\n", i, graph[i].cost);
-    }
 		int nearest_node = minDistance(graph, queue);	// Get node with lowest cost from queue
-    printf("nearest node is %d\n", nearest_node);
 		queue.remove(nearest_node);
 		graph[nearest_node].visited = true;
 		vector<edge> &neighbors = graph[nearest_node].neighbors;
@@ -131,10 +127,6 @@ vector<node> SPA_serial(vector<node> &graph, int start_node)
 				graph[curr_node].parent = nearest_node;
 			}
 		}
-
-    for (int i = 0; i < num_nodes; i++) {
-      printf("cost %d: %d\n", i, graph[i].cost);
-    }
 	}
 	return graph;
 }
@@ -154,8 +146,12 @@ static int getBlockSize()
 __global__ void checkMin(int n, int *input, bool *is_min, bool *visited)
 {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	if (index < n * n && (input[index / n] > input[index % n] || visited))
-		is_min[index / n] = false;
+	if (index < n * n && (input[index / n] > input[index % n] || visited[index / n])) {
+    // If other node already visited, don't count it
+    if (visited[index % n])
+      return;
+	  is_min[index / n] = false;
+  }
 }
 
 __global__ void findMinIdx(int n, bool *is_min, int *result)
@@ -166,17 +162,16 @@ __global__ void findMinIdx(int n, bool *is_min, int *result)
 	}
 }
 
-int parallel_min_distance(bool *visited, int *cost, int n) {
+// is_min, visited, cost, must be device ptrs
+int parallel_min_distance(bool *is_min, bool *visited, int *cost, int n) {
 	int  *c_result, result;
-	bool *c_is_min;
-	cudaMalloc((void **)&c_is_min, sizeof(bool) * n);
 	cudaMalloc((void **)&c_result, sizeof(int));
-	cudaMemset(c_is_min, true, sizeof(bool) * n);
+	cudaMemset(is_min, true, sizeof(bool) * n);
 	int numBlocks = (n * n + blockSize - 1) / blockSize;
-	checkMin << <numBlocks, blockSize >> > (n, cost, c_is_min, visited);
+	checkMin <<<numBlocks, blockSize>>> (n, cost, is_min, visited);
 	cudaDeviceSynchronize();
 	numBlocks = (n + blockSize - 1) / blockSize;
-	findMinIdx << <numBlocks, blockSize >> > (n, c_is_min, c_result);
+	findMinIdx <<<numBlocks, blockSize>>> (n, is_min, c_result);
 
 	// Retrieving result
 	cudaMemcpy((void *)&result, (void *)c_result, sizeof(int), cudaMemcpyDeviceToHost);
@@ -185,11 +180,14 @@ int parallel_min_distance(bool *visited, int *cost, int n) {
 
 __global__ void update_cost(int *matrix, bool *visited, int *costs, int n, int node) {
   int index = blockIdx.x * blockDim.x + threadIdx.x;
+
   if (index < n && index != node) {
-    if (visited[index] || matrix[node*n+index] == INT_MAX)
+    if (visited[index] || matrix[node*n+index] == 0)
       return;
     int cost = costs[node] + matrix[node*n+index];
     if (cost < costs[index]) {
+      // printf("relaxing %d cost to %d from node %d using edge w/ weight %d\n",
+      //   index, cost, node, matrix[node*n+index]);
       costs[index] = cost;
     }
   }
@@ -197,39 +195,34 @@ __global__ void update_cost(int *matrix, bool *visited, int *costs, int n, int n
 
 vector<node> SPA_parallel(int *matrix, int n, int start_node) {
   int *c_matrix, *c_cost;
-  bool *c_visited;
+  bool *c_visited, *c_is_min;
   int num_node = n;
   int *cost = (int *) malloc(sizeof(int) * n);
   for (int i = 0; i < n; i++) {
     cost[i] = INT_MAX;
   }
+  cost[start_node] = 0;
   cudaMalloc((void **)&c_matrix, sizeof(int) * n * n);
   cudaMalloc((void **)&c_cost, sizeof(int) * n);
   cudaMalloc((void **)&c_visited, sizeof(bool) * n);
+  cudaMalloc((void **)&c_is_min, sizeof(bool) * n);
   cudaMemcpy(c_matrix, matrix, sizeof(int) * n * n, cudaMemcpyHostToDevice);
   cudaMemcpy(c_cost, cost, sizeof(int) * n, cudaMemcpyHostToDevice);
-  cudaMemset((void *)&c_cost[start_node], 0, sizeof(int));
+  cudaMemset((void *)c_visited, false, sizeof(bool) * n);
   int numBlocks = (n + blockSize - 1) / blockSize;
 
 	// find shortest path from start_node to each node
 	while (num_node != 0) {
     // In parallel, get node with lowest cost from queue
-		int nearest_node = parallel_min_distance(c_visited, c_cost, n);
-    printf("nearest node is %d\n", nearest_node);
+		int nearest_node = parallel_min_distance(c_is_min, c_visited, c_cost, n);
 	  cudaMemset((void *)&c_visited[nearest_node], true, sizeof(bool));
 
     // In parallel, update all neighbors of nearest node
-    update_cost<<<numBlocks, blockSize>>>(matrix, c_visited, c_cost, n, nearest_node);
+    update_cost<<<numBlocks, blockSize>>>(c_matrix, c_visited, c_cost, n, nearest_node);
     cudaDeviceSynchronize();
-    cudaMemcpy(cost, c_cost, sizeof(int) * n, cudaMemcpyDeviceToHost);
-    for (int i = 0; i < n; i++) {
-      printf("cost %d: %d\n", i, cost[i]);
-    }
     num_node--;
 	}
   cudaMemcpy(cost, c_cost, sizeof(int) * n, cudaMemcpyDeviceToHost);
-  for (int i = 0; i < n; i++)
-    printf("%d: %d\n", i, cost[i]);
   vector<node> graph(n);
   for (int i = 0; i < n; i++) {
     graph[i].cost = cost[i];
@@ -237,6 +230,7 @@ vector<node> SPA_parallel(int *matrix, int n, int start_node) {
   cudaFree(c_matrix);
   cudaFree(c_cost);
   cudaFree(c_visited);
+  cudaFree(c_is_min);
 	return graph;
 }
 
@@ -287,8 +281,8 @@ int main(int argc, char* argv[])
 	end = clock();
 	cout << "Serial shortest distance algorithm took " << (end - start) << " clock cycles\n\n";
 
-  printResults(graphSerial);
-  printResults(graphParallel);
+  // printResults(graphSerial);
+  // printResults(graphParallel);
 	compareResults(graphParallel, graphSerial);
 	return 0;
 }
