@@ -73,13 +73,17 @@ void printResults(vector<node> graph)
 void compareResults(vector<node> graph1, vector<node> graph2)
 {
 	cout << "****** RESULT ******\n";
+  bool success = true;
 	for (int i = 0; i < graph1.size(); i++) {
 		if (graph1[i].cost != graph2[i].cost) {
-			cout << "INCORRECT: Parallel and Serial SPA do NOT match\n";
-			return;
+			printf("cost 1: %d\tcost 2: %d\n", graph1[i].cost, graph2[i].cost);
+			success = false;;
 		}
 	}
-	cout << "SUCCESS: Parallel and Serial SPA match\n";
+  if (success)
+	 cout << "SUCCESS: Parallel and Serial SPA match\n";
+  else
+    cout << "INCORRECT: Parallel and Serial SPA do NOT match\n";
 }
 
 // helper function that finds nearest neighbor for serial SPA
@@ -118,7 +122,7 @@ vector<node> SPA_serial(vector<node> &graph, int start_node)
 		for (edge const& neighbor : neighbors) {
 			int weight = neighbor.weight;
 			int curr_node = neighbor.neighbor;
-			if (graph[curr_node].visited)
+			if (graph[curr_node].visited || graph[nearest_node].cost == INT_MAX)
 				continue;
 
 			int cost = graph[nearest_node].cost + weight;
@@ -172,7 +176,7 @@ int parallel_min_distance(bool *is_min, bool *visited, int *cost, int n) {
 	cudaDeviceSynchronize();
 	numBlocks = (n + blockSize - 1) / blockSize;
 	findMinIdx <<<numBlocks, blockSize>>> (n, is_min, c_result);
-
+  cudaDeviceSynchronize();
 	// Retrieving result
 	cudaMemcpy((void *)&result, (void *)c_result, sizeof(int), cudaMemcpyDeviceToHost);
 	return result;
@@ -182,7 +186,7 @@ __global__ void update_cost(int *matrix, bool *visited, int *costs, int n, int n
   int index = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (index < n && index != node) {
-    if (visited[index] || matrix[node*n+index] == 0)
+    if (visited[index] || matrix[node*n+index] == INT_MAX || costs[node] == INT_MAX)
       return;
     int cost = costs[node] + matrix[node*n+index];
     if (cost < costs[index]) {
@@ -252,6 +256,7 @@ int main(int argc, char* argv[])
 	int num_edge = stoi(token);
   // int matrix[num_node][num_node];
   int *matrix = (int *) malloc(sizeof(int) * num_node * num_node);
+  memset(matrix, 0, sizeof(int) * num_node * num_node);
 	vector<node> graph(num_node);
 	vector<edge> edges(2 * num_edge);
   printf("n = %d\tm = %d\n", num_node, num_edge);
@@ -269,6 +274,8 @@ int main(int argc, char* argv[])
     for (int j = 0; j < num_node; j++) {
       if (matrix[i*num_node+j] != 0)
         graph[i].neighbors.push_back(edge(matrix[i*num_node+j], j, i));
+      else
+        matrix[i*num_node+j] = INT_MAX;
     }
   }
 	clock_t start = clock();
