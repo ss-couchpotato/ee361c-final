@@ -1,6 +1,7 @@
 CC = nvcc
 GCC = gcc
 CCSTD = c++11
+NVCCFLAG = -lcublas
 BIN = pathfinder
 GENERATE = generate
 
@@ -10,7 +11,7 @@ $(GENERATE): %: %.c
 	$(GCC) -o $@ $<
 
 $(BIN): %: %.cu
-	$(CC) -o $@ -std $(CCSTD) $<
+	$(CC) $(NVCCFLAG) -o $@ -std $(CCSTD) $<
 
 .PHONY: clean
 
