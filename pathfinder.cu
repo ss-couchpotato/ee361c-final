@@ -243,6 +243,8 @@ vector<node> SPA_parallel(int *matrix, int n, int start_node) {
   // int *buffer;
   int num_node = n;
   int *cost = (int *)malloc(sizeof(int) * n);
+  if (cost == NULL)
+    PERROR_EXIT("malloc");
   for (int i = 0; i < n; i++) {
     cost[i] = INT_MAX;
   }
