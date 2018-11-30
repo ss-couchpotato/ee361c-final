@@ -2,15 +2,15 @@
 #include "device_launch_parameters.h"
 #include <cstdio>
 #include <ctime>
+#include <cublas_v2.h>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <list>
 #include <sstream>
 #include <string>
-#include <vector>
-#include <cublas_v2.h>
 #include <thrust/extrema.h>
+#include <vector>
 
 using namespace std;
 
@@ -179,43 +179,34 @@ int parallel_min_distance(bool *is_min, bool *visited, int *cost, int n) {
   return result;
 }
 
-__global__ void convertCost(bool *visited, int *cost, int *buffer, int n) {
+int cublas_min_distance(cublasHandle_t handle, bool *visited, float *min_cost, int n) {
+  int result;
+  if (cublasIsamin(handle, n, min_cost, 1, &result) != CUBLAS_STATUS_SUCCESS)
+    printf("min failed\n");
+
+  return result - 1;
+}
+
+int thrust_min_distance(float *cost, int n) {
+  thrust::device_ptr<float> ptr = thrust::device_pointer_cast(cost);
+  return thrust::min_element(ptr, ptr + n) - ptr;
+}
+
+__global__ void init_costs(int start_node, int *cost, float *min_cost, int n) {
   int index = blockIdx.x * blockDim.x + threadIdx.x;
   if (index < n) {
-    buffer[index] = visited[index] ? INT_MAX : cost[index];
+    if (index == start_node) {
+      cost[index] = 0;
+      min_cost[index] = 0;
+    } else {
+      cost[index] = INT_MAX;
+      min_cost[index] = INT_MAX;
+    }
   }
 }
 
-__global__ void convertCostToFloat(bool *visited, int *cost, float *buffer, int n) {
-  int index = blockIdx.x * blockDim.x + threadIdx.x;
-  if (index < n) {
-    buffer[index] = (visited[index] ? INT_MAX : cost[index]) * 1.0;
-  }
-}
-
-int cublas_min_distance(float *buffer, bool *visited, int* cost, int n)
-{
-    int result;
-    cublasHandle_t handle;
-    cublasCreate(&handle);
-    int numBlocks = n / blockSize + 1;
-    convertCostToFloat<<<numBlocks, blockSize>>>(visited, cost, buffer, n);
-
-    if (cublasIsamin(handle, n, buffer, 1, &result) != CUBLAS_STATUS_SUCCESS)
-        printf("min failed\n");
-
-    cublasDestroy(handle);
-    return result-1;
-}
-
-int thrust_min_distance(int* cost, int n)
-{
-    thrust::device_ptr<int> ptr = thrust::device_pointer_cast(cost);
-    return thrust::min_element(ptr, ptr + n) - ptr;
-}
-
-__global__ void update_cost(int *matrix, bool *visited, int *costs, int *min_costs, int n,
-                            int node) {
+__global__ void update_cost(int *matrix, bool *visited, int *costs,
+                            float *min_costs, int n, int node) {
   int index = blockIdx.x * blockDim.x + threadIdx.x;
 
   visited[node] = true;
@@ -236,43 +227,35 @@ __global__ void update_cost(int *matrix, bool *visited, int *costs, int *min_cos
 }
 
 vector<node> SPA_parallel(int *matrix, int n, int start_node) {
-  int *c_matrix, *c_cost, *c_min_cost;
+  int *c_matrix, *c_cost;
+  float *c_min_cost;
   bool *c_visited;
-  // bool *c_is_min;
-  // float *buffer;
-  // int *buffer;
+  bool *c_is_min;
   int num_node = n;
+
   int *cost = (int *)malloc(sizeof(int) * n);
   if (cost == NULL)
     PERROR_EXIT("malloc");
-  for (int i = 0; i < n; i++) {
-    cost[i] = INT_MAX;
-  }
-  cost[start_node] = 0;
+
   cudaMalloc((void **)&c_matrix, sizeof(int) * n * n);
   cudaMalloc((void **)&c_cost, sizeof(int) * n);
   cudaMalloc((void **)&c_min_cost, sizeof(int) * n);
   cudaMalloc((void **)&c_visited, sizeof(bool) * n);
   cudaMemcpy(c_matrix, matrix, sizeof(int) * n * n, cudaMemcpyHostToDevice);
-  cudaMemcpy(c_cost, cost, sizeof(int) * n, cudaMemcpyHostToDevice);
-  cudaMemcpy(c_min_cost, c_cost, sizeof(int) * n, cudaMemcpyDeviceToDevice);
   cudaMemset((void *)c_visited, false, sizeof(bool) * n);
 
-  // cudaMalloc((void **)&c_is_min, sizeof(bool) * n);
-  // cudaMalloc((void **)&buffer, sizeof(float) * n);
-  // cudaMalloc((void **)&buffer, sizeof(int) * n);
+  cudaMalloc((void **)&c_is_min, sizeof(bool) * n);
 
   int numBlocks = (n + blockSize - 1) / blockSize;
+  init_costs<<<numBlocks, blockSize>>>(start_node, c_cost, c_min_cost, n);
 
   // find shortest path from start_node to each node
   while (num_node != 0) {
     // In parallel, get node with lowest cost from queue
-    // int nearest_node = parallel_min_distance(c_is_min, c_visited, c_cost, n);
-    // int nearest_node = cublas_min_distance(buffer, c_visited, c_cost, n);
-    int nearest_node = thrust_min_distance(c_min_cost, n);
+    int nearest_node = parallel_min_distance(c_is_min, c_visited, c_cost, n);
     // In parallel, update all neighbors of nearest node
-    update_cost<<<numBlocks, blockSize>>>(c_matrix, c_visited, c_cost, c_min_cost, n,
-                                          nearest_node);
+    update_cost<<<numBlocks, blockSize>>>(c_matrix, c_visited, c_cost,
+                                          c_min_cost, n, nearest_node);
     cudaDeviceSynchronize();
     num_node--;
   }
@@ -286,8 +269,96 @@ vector<node> SPA_parallel(int *matrix, int n, int start_node) {
   cudaFree(c_visited);
 
   cudaFree(c_min_cost);
-  // cudaFree(c_is_min);
-  // cudaFree(buffer);
+  cudaFree(c_is_min);
+  return graph;
+}
+
+vector<node> SPA_parallel_cublas(int *matrix, int n, int start_node) {
+  int *c_matrix, *c_cost;
+  bool *c_visited;
+  float *c_min_cost;
+  cublasHandle_t handle;
+  cublasCreate(&handle);
+
+  int num_node = n;
+  int *cost = (int *)malloc(sizeof(int) * n);
+  if (cost == NULL)
+    PERROR_EXIT("malloc");
+
+  cudaMalloc((void **)&c_matrix, sizeof(int) * n * n);
+  cudaMalloc((void **)&c_cost, sizeof(int) * n);
+  cudaMalloc((void **)&c_min_cost, sizeof(float) * n);
+  cudaMalloc((void **)&c_visited, sizeof(bool) * n);
+  cudaMemcpy(c_matrix, matrix, sizeof(int) * n * n, cudaMemcpyHostToDevice);
+  cudaMemset((void *)c_visited, false, sizeof(bool) * n);
+
+  int numBlocks = (n + blockSize - 1) / blockSize;
+  init_costs<<<numBlocks, blockSize>>>(start_node, c_cost, c_min_cost, n);
+
+  // find shortest path from start_node to each node
+  while (num_node != 0) {
+    // In parallel, get node with lowest cost from queue
+    int nearest_node = cublas_min_distance(handle, c_visited, c_min_cost, n);
+    // In parallel, update all neighbors of nearest node
+    update_cost<<<numBlocks, blockSize>>>(c_matrix, c_visited, c_cost,
+                                          c_min_cost, n, nearest_node);
+    cudaDeviceSynchronize();
+    num_node--;
+  }
+  cudaMemcpy(cost, c_cost, sizeof(int) * n, cudaMemcpyDeviceToHost);
+  vector<node> graph(n);
+  for (int i = 0; i < n; i++) {
+    graph[i].cost = cost[i];
+  }
+  cudaFree(c_matrix);
+  cudaFree(c_cost);
+  cudaFree(c_visited);
+  cudaFree(c_min_cost);
+  cublasDestroy(handle);
+
+  return graph;
+}
+
+vector<node> SPA_parallel_thrust(int *matrix, int n, int start_node) {
+  int *c_matrix, *c_cost;
+  bool *c_visited;
+  float *c_min_cost;
+  int num_node = n;
+  int *cost = (int *)malloc(sizeof(int) * n);
+  if (cost == NULL)
+    PERROR_EXIT("malloc");
+
+  cudaMalloc((void **)&c_matrix, sizeof(int) * n * n);
+  cudaMalloc((void **)&c_cost, sizeof(int) * n);
+  cudaMalloc((void **)&c_min_cost, sizeof(float) * n);
+  cudaMalloc((void **)&c_visited, sizeof(bool) * n);
+
+  cudaMemcpy(c_matrix, matrix, sizeof(int) * n * n, cudaMemcpyHostToDevice);
+  cudaMemset((void *)c_visited, false, sizeof(bool) * n);
+
+  int numBlocks = (n + blockSize - 1) / blockSize;
+  init_costs<<<numBlocks, blockSize>>>(start_node, c_cost, c_min_cost, n);
+
+  // find shortest path from start_node to each node
+  while (num_node != 0) {
+    // In parallel, get node with lowest cost from queue
+    int nearest_node = thrust_min_distance(c_min_cost, n);
+    // In parallel, update all neighbors of nearest node
+    update_cost<<<numBlocks, blockSize>>>(c_matrix, c_visited, c_cost,
+                                          c_min_cost, n, nearest_node);
+    cudaDeviceSynchronize();
+    num_node--;
+  }
+  cudaMemcpy(cost, c_cost, sizeof(int) * n, cudaMemcpyDeviceToHost);
+  vector<node> graph(n);
+  for (int i = 0; i < n; i++) {
+    graph[i].cost = cost[i];
+  }
+  cudaFree(c_matrix);
+  cudaFree(c_cost);
+  cudaFree(c_visited);
+
+  cudaFree(c_min_cost);
   return graph;
 }
 
@@ -332,12 +403,24 @@ int main(int argc, char *argv[]) {
         matrix[i * num_node + j] = INT_MAX;
     }
   }
-  printf("graph generated\n");
+  printf("graph generated\n\n");
   clock_t start = clock();
   vector<node> graphParallel = SPA_parallel(matrix, num_node, 0);
   clock_t end = clock();
   cout << "Parallel shortest distance algorithm took " << (end - start)
        << " clock cycles\n\n";
+
+  start = clock();
+  graphParallel = SPA_parallel_cublas(matrix, num_node, 0);
+  end = clock();
+  cout << "Parallel shortest distance algorithm w/ cublas took "
+       << (end - start) << " clock cycles\n\n";
+
+  start = clock();
+  graphParallel = SPA_parallel_thrust(matrix, num_node, 0);
+  end = clock();
+  cout << "Parallel shortest distance algorithm w/ thrust took "
+       << (end - start) << " clock cycles\n\n";
 
   start = clock();
   vector<node> graphSerial =
